@@ -1,0 +1,30 @@
+services:
+  devices-dealer:
+    build: .
+    image: devices-dealer
+    container_name: devices-dealer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Mot de passe de l'interface. Sans lui, un mot de passe aléatoire est affiché dans `docker compose logs`
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      # Clé de chiffrement des mots de passe d'équipements. Sinon générée dans le volume (/data/secret.key)
+      SECRET_KEY: ${SECRET_KEY:-}
+      # À passer à "true" derrière un reverse proxy HTTPS
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    volumes:
+      - ./data:/data
+    # Console série locale (câble console USB) : décommentez et adaptez
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+
+  # docker compose --profile demo up  →  faux switch Cisco (hôte "cisco-demo", port 2222, admin/admin)
+  cisco-demo:
+    profiles: ["demo"]
+    image: devices-dealer
+    depends_on: [devices-dealer]
+    command: ["node", "test/emulator-cli.js"]
+    environment:
+      EMU_NAME: SW-DEMO
