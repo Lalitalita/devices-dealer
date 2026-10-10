@@ -122,3 +122,15 @@ test('secrets chiffrés sur disque', async () => {
   assert.ok(!raw.includes('"admin"') || !/"password": "admin"/.test(raw));
   assert.ok(!raw.includes('password123'));
 });
+
+test('prompts : doublons, séquences d’échappement, saut de page HP', async () => {
+  const { CliSession, clean } = await import('../src/cli.js');
+  const { default: procurve } = await import('../src/drivers/hp_procurve.js');
+  const { default: cisco } = await import('../src/drivers/cisco_ios.js');
+  const last = (s) => clean(s).split('\n').pop();
+  assert.match(last('\x1b[24;1H\x1b[1;1HAmoniSwitch# AmoniSwitch# '), procurve.prompt);
+  assert.match(last('RT01-JPO(config-subif)#'), cisco.prompt);
+  assert.match(last('RT01-JPO>'), cisco.prompt);
+  assert.doesNotMatch(last('% Invalid input detected'), cisco.prompt);
+  assert.ok(CliSession);
+});

@@ -20,7 +20,8 @@ export function parseInterfaces(cfg, brief) {
     let x;
     if ((x = /^description (.*)$/.exec(l))) cur.description = x[1];
     else if (l === 'shutdown') cur.adminUp = false;
-    else if ((x = /^ip address (\S+) (\S+)/.exec(l))) [cur.ip, cur.mask] = [x[1], x[2]];
+    else if (l === 'ip address dhcp') [cur.ip, cur.mask] = ['dhcp', ''];
+    else if ((x = /^ip address (\d\S+) (\S+)/.exec(l))) [cur.ip, cur.mask] = [x[1], x[2]];
     else if ((x = /^switchport mode (access|trunk)/.exec(l))) cur.mode = x[1];
     else if ((x = /^switchport access vlan (\d+)/.exec(l))) cur.accessVlan = x[1];
     else if ((x = /^switchport trunk allowed vlan (?:add )?(.*)$/.exec(l))) cur.trunkVlans = x[1];
@@ -100,7 +101,7 @@ export function parseNeighbors(cdp, lldp) {
 export default {
   id: 'cisco_ios',
   label: 'Cisco IOS / IOS-XE',
-  prompt: /^[\w.\-/@:]+(\([\w\-/. ]+\))?[>#]\s*$/,
+  prompt: /[\w.\-/@:]+(\([\w\-/. ]+\))?[>#]\s*$/,
   enable: true,
   init: ['terminal length 0', 'terminal width 0'],
   configEnter: ['configure terminal'],
@@ -159,7 +160,8 @@ export default {
         c.push('switchport mode trunk');
         if (p.trunkVlans) c.push(`switchport trunk allowed vlan ${safe(p.trunkVlans, 'VLANs').replace(/[^0-9,\-a-z ]/gi, '')}`);
       } else if (p.mode === 'routed' && p.ip) {
-        c.push('no switchport', `ip address ${safeIp(p.ip)} ${safeIp(p.mask, 'masque')}`);
+        if (!p.router) c.push('no switchport'); // une interface de routeur n'a pas de switchport
+        c.push(p.ip === 'dhcp' ? 'ip address dhcp' : `ip address ${safeIp(p.ip)} ${safeIp(p.mask, 'masque')}`);
       }
       return c;
     },

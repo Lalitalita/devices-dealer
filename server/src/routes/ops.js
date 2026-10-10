@@ -55,7 +55,7 @@ export function opsRoutes(app, store) {
 
   app.put('/api/devices/:id/interfaces', async (req) => {
     const { name, ...patch } = req.body || {};
-    return push(req, `interface ${name}`, (w) => w.interface?.(name, patch), { save: patch.save });
+    return push(req, `interface ${name}`, (w) => w.interface?.(name, { ...patch, router: dev(req).type === 'router' }), { save: patch.save });
   });
   app.put('/api/devices/:id/hostname', async (req) => push(req, 'hostname', (w) => w.hostname?.(req.body?.hostname)));
   app.post('/api/devices/:id/vlans', async (req) => push(req, `vlan ${req.body?.id}`, (w) => w.vlanCreate?.(req.body?.id, req.body?.name)));

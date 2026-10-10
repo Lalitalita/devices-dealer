@@ -56,7 +56,7 @@ export function parseNeighborDetail(out) {
 export default {
   id: 'hp_procurve',
   label: 'HP ProCurve / Aruba OS-Switch',
-  prompt: /^[\w.\-/@: ]*(\([\w\-/. ]+\))?[>#]\s*$/,
+  prompt: /[\w.\-/@:]+(\([\w\-/. ]+\))?[>#]\s*$/,
   enable: true,
   init: ['no page'],
   configEnter: ['configure'],

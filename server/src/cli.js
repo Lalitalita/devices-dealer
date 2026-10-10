@@ -2,9 +2,9 @@ import { HttpError } from './util.js';
 
 // eslint-disable-next-line no-control-regex
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][A-Z0-9]|\x1b[=>78MDE]|\x07|\x00/g;
-const MORE = /\s*(-{2,}\s*more\s*-{2,}|-{2,}\s*MORE\s*-{2,}|<--- More --->)[\x08 \x1b[\]0-9;KJ]*/gi;
+const MORE = /\s*(?:-{2,}\s*more\s*-{2,}(?:,\s*next page:[^\n\x1b]*?Control-C)?|<--- More --->)(?:\x1b\[[0-9;?]*[ -/]*[@-~]|[\x08 ])*/gi;
 
-export const clean = (s) => s.replace(ANSI, '').replace(/[^\n\x08]\x08/g, '').replace(/\x08/g, '').replace(/\r\n?/g, '\n');
+export const clean = (s) => s.replace(ANSI, '').replace(/[^\n\x08]\x08/g, '').replace(/\x08/g, '').replace(/\x1b/g, '').replace(/\r\n?/g, '\n');
 
 /**
  * Pilote une CLI d'équipement réseau via un transport (ssh / console) :
@@ -90,8 +90,19 @@ export class CliSession {
         handlers: [{ re: /password\s*:\s*$/i, send: () => `${secrets.enableSecret || secrets.password || ''}\r` }],
       });
     }
+    await this._quiet();
     for (const c of this.driver.init || []) await this.run(c);
     return this;
+  }
+
+  /** Attend que l'équipement arrête d'écrire (bannières, prompts en double) puis vide le tampon. */
+  async _quiet(ms = 400) {
+    let n;
+    do {
+      n = this.buf.length;
+      await new Promise((r) => setTimeout(r, ms));
+    } while (this.buf.length !== n && !this.closed);
+    this.buf = '';
   }
 
   /** Exécute une commande et renvoie sa sortie nettoyée (sans écho ni prompt). */
