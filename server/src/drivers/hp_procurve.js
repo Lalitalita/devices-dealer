@@ -40,6 +40,33 @@ export function parseConfig(cfg) {
   return { ifaces: [...ifaces.values()], vlans: [...vlans.values()] };
 }
 
+/** Liste des VLANs avec leurs ports : `show vlans` puis `show vlans <id>` pour chaque VLAN. */
+export async function membership(cli) {
+  const list = await cli.run('show vlans');
+  const res = [];
+  for (const line of list.split('\n')) {
+    const m = /^\s*(\d+)\s+(.+?)\s+\|\s+(\S+)/.exec(line);
+    if (m) res.push({ id: Number(m[1]), name: m[2].trim(), status: m[3], tagged: [], untagged: [] });
+  }
+  for (const v of res) {
+    const d = await cli.run(`show vlans ${v.id}`);
+    for (const line of d.split('\n')) {
+      const m = /^\s*(\S+)\s+(Untagged|Tagged)\b/i.exec(line);
+      if (m) (m[2].toLowerCase() === 'tagged' ? v.tagged : v.untagged).push(m[1]);
+    }
+  }
+  return res;
+}
+
+export function parseBrief(out) {
+  const rows = [];
+  for (const line of out.split('\n')) {
+    const m = /^\s*(\S+)\s+.*?\|.*?\b(Yes|No)\s+(Up|Down)\b/i.exec(line);
+    if (m) rows.push({ name: m[1], enabled: /yes/i.test(m[2]), up: /up/i.test(m[3]) });
+  }
+  return rows;
+}
+
 export function parseNeighborDetail(out) {
   const get = (k) => new RegExp(`^\\s*${k}\\s*:\\s*(.*)$`, 'mi').exec(out)?.[1]?.trim() || '';
   return {
@@ -81,43 +108,33 @@ export default {
       };
     },
     async interfaces(cli) {
+      const brief = parseBrief(await cli.run('show interfaces brief'));
       const cfg = await cli.run('show running-config', { timeout: 60000 });
-      const brief = await cli.run('show interfaces brief');
-      const { ifaces, vlans } = parseConfig(cfg);
-      const byName = new Map(ifaces.map((i) => [i.name, i]));
-      const rows = [];
-      for (const line of brief.split('\n')) {
-        const m = /^\s*(\S+)\s+\S+\s+\|\s+(\S+)\s+(\S+)\s+(Up|Down)/i.exec(line);
-        if (!m) continue;
-        const c = byName.get(m[1]) || { name: m[1], description: '', adminUp: true };
-        const untagged = vlans.find((v) => v.untagged.includes(m[1]));
-        const tagged = vlans.filter((v) => v.tagged.includes(m[1])).map((v) => v.id);
-        rows.push({
-          name: m[1],
-          description: c.description,
-          adminUp: c.adminUp && /yes/i.test(m[2]),
-          linkUp: m[4].toLowerCase() === 'up',
-          ip: '',
-          mask: '',
-          mode: tagged.length ? 'trunk' : 'access',
-          accessVlan: untagged ? String(untagged.id) : '',
-          trunkVlans: tagged.join(','),
-        });
-      }
-      return rows;
+      const conf = parseConfig(cfg);
+      let vlans = await membership(cli);
+      if (!vlans.some((v) => v.tagged.length || v.untagged.length)) vlans = conf.vlans; // repli : running-config
+      const byName = new Map(conf.ifaces.map((i) => [i.name, i]));
+      return brief.map((b) => {
+        const c = byName.get(b.name) || { description: '' };
+        const untagged = vlans.find((v) => v.untagged.includes(b.name));
+        const tagged = vlans.filter((v) => v.tagged.includes(b.name)).map((v) => v.id);
+        return {
+          name: b.name, description: c.description, adminUp: b.enabled && c.adminUp !== false, linkUp: b.up,
+          ip: '', mask: '', mode: tagged.length ? 'trunk' : untagged ? 'access' : null,
+          accessVlan: untagged ? String(untagged.id) : '', trunkVlans: tagged.join(','),
+        };
+      });
     },
     async vlans(cli) {
-      const out = await cli.run('show vlans');
-      const cfg = await cli.run('show running-config');
-      const cfgVlans = parseConfig(cfg).vlans;
-      const res = [];
-      for (const line of out.split('\n')) {
-        const m = /^\s*(\d+)\s+(.+?)\s+\|\s+(\S+)/.exec(line);
-        if (!m) continue;
-        const c = cfgVlans.find((v) => v.id === Number(m[1]));
-        res.push({ id: Number(m[1]), name: m[2].trim(), status: m[3], ports: c ? [...c.untagged, ...c.tagged] : [] });
+      let vlans = await membership(cli);
+      if (!vlans.some((v) => v.tagged.length || v.untagged.length)) {
+        const conf = parseConfig(await cli.run('show running-config'));
+        for (const v of vlans) {
+          const c = conf.vlans.find((x) => x.id === v.id);
+          if (c) Object.assign(v, { tagged: c.tagged, untagged: c.untagged });
+        }
       }
-      return res;
+      return vlans.map((v) => ({ id: v.id, name: v.name, status: v.status, ports: [...v.untagged, ...v.tagged.map((p) => `${p}(T)`)] }));
     },
     async routes(cli) {
       const cfg = await cli.run('show running-config');
@@ -148,6 +165,7 @@ export default {
   },
 
   write: {
+    negate: (line) => (line.startsWith('no ') ? line.slice(3) : `no ${line}`),
     hostname: (name) => [`hostname "${safe(name, 'hostname').replace(/"/g, '')}"`],
     interface(name, p) {
       const n = safe(name, 'interface');

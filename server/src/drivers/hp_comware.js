@@ -118,6 +118,7 @@ export default {
   },
 
   write: {
+    negate: (line) => (line.startsWith('undo ') ? line.slice(5) : `undo ${line}`),
     hostname: (name) => [`sysname ${safe(name, 'hostname')}`],
     interface(name, p) {
       const c = [`interface ${safe(name, 'interface')}`];

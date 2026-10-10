@@ -1,6 +1,6 @@
 import { seal } from '../crypto.js';
 import { HttpError, safe, uid } from '../util.js';
-import { checkReachable } from '../sessions.js';
+import { checkReachable, disconnect } from '../sessions.js';
 import { driverList } from '../drivers/index.js';
 
 const TYPES = ['router', 'switch', 'firewall', 'ap', 'server', 'pc', 'cloud', 'other'];
@@ -68,12 +68,14 @@ export function devicesRoutes(app, store) {
   app.put('/api/devices/:id', async (req) => {
     const d = find(req.params.id);
     Object.assign(d, build(req.body || {}, d));
+    disconnect(d.id); // les paramètres de connexion ont pu changer
     store.save();
     return publicDevice(d);
   });
 
   app.delete('/api/devices/:id', async (req) => {
     const d = find(req.params.id);
+    disconnect(d.id);
     data.devices = data.devices.filter((x) => x !== d);
     data.links = data.links.filter((l) => l.a.deviceId !== d.id && l.b.deviceId !== d.id);
     store.save();

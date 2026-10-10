@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { closeTerminal, closeAllExcept } from './terminals.js';
 import { api, setUnauthorizedHandler } from './api.js';
 
 const Ctx = createContext(null);
@@ -11,6 +12,8 @@ export function AppProvider({ children }) {
   const [links, setLinks] = useState([]);
   const [status, setStatus] = useState({});
   const [toasts, setToasts] = useState([]);
+  const [sessions, setSessions] = useState([]);
+  const [connecting, setConnecting] = useState('');
   const [activeId, setActiveIdState] = useState(() => localStorage.getItem('dd.active') || '');
 
   const toast = useCallback((message, kind = 'ok') => {
@@ -34,6 +37,31 @@ export function AppProvider({ children }) {
 
   const refreshStatus = useCallback(() => api.get('/api/status').then(setStatus).catch(() => {}), []);
 
+  const refreshSessions = useCallback(
+    () => api.get('/api/sessions').then((l) => { setSessions(l.map((x) => x.id)); closeAllExcept(l.map((x) => x.id)); }).catch(() => {}),
+    [],
+  );
+
+  const connectDevice = useCallback(async (id) => {
+    setConnecting(id);
+    try {
+      await api.post(`/api/devices/${id}/connect`);
+      await refreshSessions();
+      toast('Connecté');
+    } catch (e) {
+      toast(e.message, 'err');
+    }
+    setConnecting('');
+  }, [refreshSessions, toast]);
+
+  const disconnectDevice = useCallback(async (id) => {
+    try { await api.post(`/api/devices/${id}/disconnect`); } catch { /* déjà fermée */ }
+    closeTerminal(id);
+    forget(id);
+    await refreshSessions();
+    toast('Déconnecté');
+  }, [refreshSessions, toast]);
+
   useEffect(() => {
     setUnauthorizedHandler(() => setUser(null));
     api.get('/api/auth/me').then((r) => setUser(r.user)).catch(() => setUser(null));
@@ -43,9 +71,10 @@ export function AppProvider({ children }) {
     if (!user) return;
     loadMeta();
     reload().then(refreshStatus);
-    const t = setInterval(refreshStatus, 30000);
+    refreshSessions();
+    const t = setInterval(() => { refreshStatus(); refreshSessions(); }, 20000);
     return () => clearInterval(t);
-  }, [user, loadMeta, reload, refreshStatus]);
+  }, [user, loadMeta, reload, refreshStatus, refreshSessions]);
 
   // thème + couleur d'accent
   useEffect(() => {
@@ -67,7 +96,7 @@ export function AppProvider({ children }) {
 
   const active = useMemo(() => devices.find((d) => d.id === activeId && !d.virtual) || null, [devices, activeId]);
 
-  const value = { user, setUser, meta, loadMeta, devices, links, status, reload, refreshStatus, toast, active, activeId, setActiveId };
+  const value = { sessions, connecting, connectDevice, disconnectDevice, user, setUser, meta, loadMeta, devices, links, status, reload, refreshStatus, toast, active, activeId, setActiveId };
   return (
     <Ctx.Provider value={value}>
       {children}
@@ -80,21 +109,40 @@ export function AppProvider({ children }) {
   );
 }
 
-/** Charge des données d'un appareil (SSH) avec état de chargement/erreur. */
+// --- cache des lectures d'équipement : on ne relance une commande que si nécessaire ---
+const cache = new Map(); // url -> { data, error, loading, stale }
+const listeners = new Set();
+const emit = () => listeners.forEach((l) => l());
+const subscribe = (l) => (listeners.add(l), () => listeners.delete(l));
+
+async function fetchInto(url) {
+  const old = cache.get(url);
+  if (old?.loading) return;
+  cache.set(url, { data: old?.data ?? null, error: '', loading: true, stale: false });
+  emit();
+  try {
+    cache.set(url, { data: await api.get(url), error: '', loading: false, stale: false });
+  } catch (e) {
+    cache.set(url, { data: null, error: e.message, loading: false, stale: false });
+  }
+  emit();
+}
+
+/** Marque périmées les lectures d'un appareil (après une modification) : les pages ouvertes se rafraîchissent. */
+export function invalidate(deviceId) {
+  for (const [k, v] of cache) if (k.startsWith(`/api/devices/${deviceId}/`) && !k.includes('/backups')) cache.set(k, { ...v, stale: true });
+  emit();
+}
+export function forget(deviceId) {
+  for (const k of [...cache.keys()]) if (k.startsWith(`/api/devices/${deviceId}/`)) cache.delete(k);
+  emit();
+}
+
+/** Lecture d'un appareil, mise en cache. `reload()` force une nouvelle lecture. */
 export function useRemote(url) {
-  const [state, setState] = useState({ data: null, loading: !!url, error: '' });
-  const seq = useRef(0);
-  const load = useCallback(async () => {
-    if (!url) return setState({ data: null, loading: false, error: '' });
-    const n = ++seq.current;
-    setState((s) => ({ ...s, loading: true, error: '' }));
-    try {
-      const data = await api.get(url);
-      if (n === seq.current) setState({ data, loading: false, error: '' });
-    } catch (e) {
-      if (n === seq.current) setState({ data: null, loading: false, error: e.message });
-    }
-  }, [url]);
-  useEffect(() => { load(); }, [load]);
-  return { ...state, reload: load };
+  const e = useSyncExternalStore(subscribe, () => (url ? cache.get(url) : undefined));
+  useEffect(() => {
+    if (url && (!e || (e.stale && !e.loading))) fetchInto(url);
+  }, [url, e]);
+  return { data: e?.data ?? null, loading: !!url && (!e || e.loading), error: e?.error || '', reload: () => url && fetchInto(url) };
 }

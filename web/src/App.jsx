@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { NavLink, Route, Routes, Navigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Network, HardDrive, Settings2, Cable, GitBranch, Radar, Archive, TerminalSquare, ScrollText, SlidersHorizontal, ChevronDown, Save, LogOut, Sun, Moon, Waypoints, ListChecks, Route as RouteIcon, Cpu } from 'lucide-react';
+import { LayoutDashboard, Network, HardDrive, Cable, GitBranch, Radar, Archive, TerminalSquare, ScrollText, SlidersHorizontal, ChevronDown, Save, LogOut, Sun, Moon, Waypoints, ListChecks, Route as RouteIcon, Cpu, Shuffle, Server, Plug, Unplug, Loader2 } from 'lucide-react';
 import { useApp } from './store.jsx';
 import { api } from './api.js';
 import { DeviceIcon } from './ui.jsx';
@@ -11,6 +11,8 @@ import Devices from './pages/Devices.jsx';
 import { SystemPage, InterfacesPage, VlansPage, RoutingPage, NeighborsPage } from './pages/Config.jsx';
 import { BackupsPage, CommandsPage, ConsolePage } from './pages/Tools.jsx';
 import { AuditPage, SettingsPage } from './pages/Admin.jsx';
+import { NatPage, DhcpPage } from './pages/Network.jsx';
+import ErrorBoundary from './ErrorBoundary.jsx';
 
 const NAV = [
   { title: 'Général', items: [
@@ -23,6 +25,8 @@ const NAV = [
     { to: '/config/interfaces', icon: Cable, label: 'Interfaces' },
     { to: '/config/vlans', icon: Waypoints, label: 'VLANs' },
     { to: '/config/routing', icon: RouteIcon, label: 'Routage' },
+    { to: '/config/nat', icon: Shuffle, label: 'NAT' },
+    { to: '/config/dhcp', icon: Server, label: 'DHCP' },
     { to: '/config/neighbors', icon: Radar, label: 'Voisins LLDP/CDP' },
   ] },
   { title: 'Outils', needsDevice: true, items: [
@@ -70,7 +74,7 @@ function Sidebar() {
 }
 
 function Topbar() {
-  const { devices, active, activeId, setActiveId, meta, loadMeta, setUser, toast } = useApp();
+  const { devices, active, activeId, setActiveId, meta, loadMeta, setUser, toast, sessions, connecting, connectDevice, disconnectDevice } = useApp();
   const { pathname } = useLocation();
   const needsDevice = pathname.startsWith('/config') || pathname.startsWith('/tools');
   const [saving, setSaving] = useState(false);
@@ -95,12 +99,15 @@ function Topbar() {
           {active && <DeviceIcon type={active.type} />}
           <select value={activeId} onChange={(e) => setActiveId(e.target.value)} style={{ width: 220 }}>
             <option value="">— choisir un appareil —</option>
-            {real.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            {real.map((d) => <option key={d.id} value={d.id}>{sessions.includes(d.id) ? '● ' : ''}{d.name}</option>)}
           </select>
+          {active && (sessions.includes(active.id)
+            ? <button onClick={() => disconnectDevice(active.id)} title="Fermer la connexion"><Unplug size={15} /> Déconnecter</button>
+            : <button className="primary" disabled={connecting === active.id} onClick={() => connectDevice(active.id)}>{connecting === active.id ? <Loader2 size={15} className="spin" /> : <Plug size={15} />} Connecter</button>)}
         </div>
       )}
       <div className="spacer" />
-      {needsDevice && active && pathname.startsWith('/config') && (
+      {needsDevice && active && sessions.includes(active.id) && pathname.startsWith('/config') && (
         <button onClick={saveConfig} disabled={saving} title="write memory / save">
           <Save size={15} /> Enregistrer la config
         </button>
@@ -126,6 +133,7 @@ export default function App() {
       <div className="main">
         <Topbar />
         <div className={`content ${pathname === '/topology' ? 'flush' : ''}`}>
+          <ErrorBoundary resetKey={pathname}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/topology" element={<Topology />} />
@@ -134,6 +142,8 @@ export default function App() {
             <Route path="/config/interfaces" element={<InterfacesPage />} />
             <Route path="/config/vlans" element={<VlansPage />} />
             <Route path="/config/routing" element={<RoutingPage />} />
+            <Route path="/config/nat" element={<NatPage />} />
+            <Route path="/config/dhcp" element={<DhcpPage />} />
             <Route path="/config/neighbors" element={<NeighborsPage />} />
             <Route path="/tools/backups" element={<BackupsPage />} />
             <Route path="/tools/commands" element={<CommandsPage />} />
@@ -142,6 +152,7 @@ export default function App() {
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" />} />
           </Routes>
+          </ErrorBoundary>
         </div>
       </div>
     </div>

@@ -129,3 +129,11 @@ pre.term { background: var(--bg); border: 1px solid var(--line); border-radius: 
 @media (max-width: 760px) { .app { grid-template-columns: 1fr; } .side { display: none; } }
 
 .actions .search { width: 220px; }
+
+/* diff */
+.diff { font: 12px/1.55 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; overflow: auto; max-height: 55vh; }
+.diff-line { padding: 0 10px; white-space: pre-wrap; word-break: break-all; display: flex; gap: 10px; }
+.diff-line > span { opacity: .6; width: 10px; flex: none; }
+.diff-line.add { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+.diff-line.del { background: color-mix(in srgb, var(--err) 14%, transparent); color: var(--err); }
+.diff-gap { text-align: center; color: var(--muted); background: var(--panel-2); }

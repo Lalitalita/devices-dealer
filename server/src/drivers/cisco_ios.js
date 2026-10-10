@@ -1,4 +1,4 @@
-import { safe, safeInt, safeIp, parseNetwork, maskToPrefix } from '../util.js';
+import { safe, safeInt, safeIp, parseNetwork, maskToPrefix, networkOf, HttpError } from '../util.js';
 
 
 export function parseInterfaces(cfg, brief) {
@@ -7,7 +7,7 @@ export function parseInterfaces(cfg, brief) {
   for (const line of cfg.split('\n')) {
     const m = /^interface (\S.*)$/.exec(line);
     if (m) {
-      cur = { name: m[1].trim(), description: '', adminUp: true, linkUp: false, ip: '', mask: '', mode: null, accessVlan: '', trunkVlans: '' };
+      cur = { name: m[1].trim(), description: '', adminUp: true, linkUp: false, ip: '', mask: '', mode: null, accessVlan: '', trunkVlans: '', nat: '' };
       map.set(cur.name, cur);
       continue;
     }
@@ -26,6 +26,8 @@ export function parseInterfaces(cfg, brief) {
     else if ((x = /^switchport access vlan (\d+)/.exec(l))) cur.accessVlan = x[1];
     else if ((x = /^switchport trunk allowed vlan (?:add )?(.*)$/.exec(l))) cur.trunkVlans = x[1];
     else if (l === 'no switchport') cur.mode = 'routed';
+    else if ((x = /^encapsulation dot1q (\d+)/i.exec(l))) cur.accessVlan = x[1];
+    else if ((x = /^ip nat (inside|outside)$/.exec(l))) cur.nat = x[1];
   }
   for (const it of map.values()) if (!it.mode && it.ip) it.mode = 'routed';
   // état réel : show ip interface brief
@@ -52,6 +54,64 @@ export function parseVlans(out) {
     }
   }
   return vlans;
+}
+
+/** VLANs « déduits » des sous-interfaces dot1Q d'un routeur (router-on-a-stick). */
+export function vlansFromSubinterfaces(ifaces) {
+  const m = new Map();
+  for (const i of ifaces) {
+    if (!/\.\d+$/.test(i.name) || !i.accessVlan) continue;
+    const id = Number(i.accessVlan);
+    const v = m.get(id) || { id, name: '', status: 'sous-interface', ports: [], source: 'subinterface', subs: [] };
+    v.ports.push(i.name);
+    v.subs.push(i.name);
+    v.name ||= i.description || '';
+    if (i.ip) v.ip = `${i.ip} ${i.mask}`;
+    m.set(id, v);
+  }
+  return [...m.values()];
+}
+
+export function parseNat(cfg, ifaces) {
+  const rules = [], pools = [], acls = {};
+  const lines = cfg.split('\n');
+  let named = null;
+  for (const raw of lines) {
+    const l = raw.trim();
+    let m;
+    if ((m = /^ip nat inside source list (\S+) (?:interface (\S+)|pool (\S+))( overload)?/.exec(l)))
+      rules.push({ kind: 'dynamic', acl: m[1], interface: m[2] || '', pool: m[3] || '', overload: !!m[4], raw: l });
+    else if ((m = /^ip nat inside source static (?:(tcp|udp) )?(\d+\.\d+\.\d+\.\d+)(?: (\d+))? (?:interface (\S+)|(\d+\.\d+\.\d+\.\d+))(?: (\d+))?/.exec(l)))
+      rules.push({ kind: 'static', proto: m[1] || '', inside: m[2], insidePort: m[3] || '', outside: m[4] ? `interface ${m[4]}` : m[5], outsidePort: m[6] || '', raw: l });
+    else if ((m = /^ip nat pool (\S+) (\S+) (\S+) netmask (\S+)/.exec(l))) pools.push({ name: m[1], start: m[2], end: m[3], mask: m[4] });
+    else if ((m = /^access-list (\d+) (permit|deny) (.*)$/.exec(l))) (acls[m[1]] ||= []).push(`${m[2]} ${m[3]}`);
+    else if ((m = /^ip access-list (?:standard|extended) (\S+)/.exec(raw))) { named = m[1]; acls[named] ||= []; }
+    else if (named && /^\s/.test(raw)) acls[named].push(l);
+    else if (!/^\s/.test(raw)) named = null;
+  }
+  return {
+    interfaces: ifaces.filter((i) => i.ip || i.nat).map((i) => ({ name: i.name, ip: i.ip, mask: i.mask, role: i.nat || '' })),
+    rules, pools, acls,
+  };
+}
+
+export function parseDhcp(cfg) {
+  const pools = [], excluded = [];
+  let cur = null;
+  for (const raw of cfg.split('\n')) {
+    const l = raw.trim();
+    let m;
+    if ((m = /^ip dhcp pool (\S+)/.exec(l))) { cur = { name: m[1], network: '', mask: '', router: '', dns: [], domain: '', lease: '' }; pools.push(cur); continue; }
+    if ((m = /^ip dhcp excluded-address (\S+)(?: (\S+))?/.exec(l))) { excluded.push({ from: m[1], to: m[2] || m[1] }); cur = null; continue; }
+    if (cur && /^\s/.test(raw)) {
+      if ((m = /^network (\S+) (\S+)/.exec(l))) [cur.network, cur.mask] = [m[1], m[2]];
+      else if ((m = /^default-router (\S+)/.exec(l))) cur.router = m[1];
+      else if ((m = /^dns-server (.+)$/.exec(l))) cur.dns = m[1].trim().split(/\s+/);
+      else if ((m = /^domain-name (\S+)/.exec(l))) cur.domain = m[1];
+      else if ((m = /^lease (.+)$/.exec(l))) cur.lease = m[1];
+    } else if (!/^\s/.test(raw)) cur = null;
+  }
+  return { pools, excluded };
 }
 
 export function parseRoutes(cfg) {
@@ -131,7 +191,29 @@ export default {
       return parseInterfaces(cfg, brief);
     },
     async vlans(cli) {
-      return parseVlans(await cli.run('show vlan brief'));
+      let out = await cli.run('show vlan brief');
+      if (/^% /m.test(out)) out = await cli.run('show vlan-switch brief'); // routeur avec module switch
+      const vlans = /^% /m.test(out) ? [] : parseVlans(out);
+      // routeur : les VLANs vivent dans les sous-interfaces dot1Q
+      const cfg = await cli.run('show running-config', { timeout: 60000 });
+      for (const sv of vlansFromSubinterfaces(parseInterfaces(cfg, ''))) {
+        const ex = vlans.find((v) => v.id === sv.id);
+        if (ex) { ex.ports.push(...sv.ports); ex.subs = sv.subs; ex.ip = sv.ip; } else vlans.push(sv);
+      }
+      return vlans.sort((a, b) => a.id - b.id);
+    },
+    async nat(cli) {
+      const cfg = await cli.run('show running-config', { timeout: 60000 });
+      return parseNat(cfg, parseInterfaces(cfg, ''));
+    },
+    async natTranslations(cli) {
+      return cli.run('show ip nat translations');
+    },
+    async dhcp(cli) {
+      return parseDhcp(await cli.run('show running-config', { timeout: 60000 }));
+    },
+    async dhcpBindings(cli) {
+      return cli.run('show ip dhcp binding');
     },
     async routes(cli) {
       const cfg = await cli.run('show running-config | include ^ip route');
@@ -165,6 +247,63 @@ export default {
       }
       return c;
     },
+    negate: (line) => (line.startsWith('no ') ? line.slice(3) : `no ${line}`),
+    subinterface(p) {
+      const id = safeInt(p.vlan, 'VLAN', 1, 4094);
+      const c = [`interface ${safe(p.parent, 'interface parente')}.${id}`, `encapsulation dot1Q ${id}`];
+      if (p.description) c.push(`description ${safe(p.description, 'description')}`);
+      if (p.ip) c.push(`ip address ${safeIp(p.ip)} ${safeIp(p.mask, 'masque')}`);
+      return c;
+    },
+    subinterfaceDelete(name) {
+      if (!/\.\d+$/.test(safe(name, 'interface'))) throw new HttpError(400, 'Seules les sous-interfaces peuvent être supprimées');
+      return [`no interface ${name}`];
+    },
+    natInterface(name, role) {
+      const c = [`interface ${safe(name, 'interface')}`];
+      if (role === 'inside') c.push('no ip nat outside', 'ip nat inside');
+      else if (role === 'outside') c.push('no ip nat inside', 'ip nat outside');
+      else c.push('no ip nat inside', 'no ip nat outside');
+      return c;
+    },
+    /** Partage de connexion (PAT) : outside = interface WAN, inside = [{ name, ip, mask }] */
+    natPat({ outside, inside, acl }) {
+      const n = safeInt(acl, 'ACL', 1, 99);
+      if (!inside?.length) throw new HttpError(400, 'Choisissez au moins une interface interne');
+      const c = [`no access-list ${n}`];
+      for (const i of inside) {
+        const { net, wildcard } = networkOf(safeIp(i.ip), safeIp(i.mask, 'masque'));
+        c.push(`access-list ${n} permit ${net} ${wildcard}`);
+      }
+      c.push(`interface ${safe(outside, 'interface externe')}`, 'no ip nat inside', 'ip nat outside');
+      for (const i of inside) c.push(`interface ${safe(i.name, 'interface')}`, 'no ip nat outside', 'ip nat inside');
+      c.push(`ip nat inside source list ${n} interface ${outside} overload`);
+      return c;
+    },
+    natStatic(r) {
+      const proto = r.proto === 'tcp' || r.proto === 'udp' ? r.proto + ' ' : '';
+      const ip = safeIp(r.inside, 'IP interne');
+      const ip_port = proto ? ` ${safeInt(r.insidePort, 'port interne', 1, 65535)}` : '';
+      const out = r.outside.startsWith('interface ') ? `interface ${safe(r.outside.slice(10), 'interface')}` : safeIp(r.outside, 'IP externe');
+      const out_port = proto ? ` ${safeInt(r.outsidePort || r.insidePort, 'port externe', 1, 65535)}` : '';
+      return [`ip nat inside source static ${proto}${ip}${ip_port} ${out}${out_port}`];
+    },
+    natRuleDelete(raw) {
+      const l = safe(raw, 'règle');
+      if (!/^ip nat (inside|outside) source /.test(l)) throw new HttpError(400, 'Règle NAT invalide');
+      return [`no ${l}`];
+    },
+    dhcpPoolSet(p) {
+      const c = [`ip dhcp pool ${safe(p.name, 'nom').replace(/\s+/g, '_')}`, `network ${safeIp(p.network, 'réseau')} ${safeIp(p.mask, 'masque')}`];
+      if (p.router) c.push(`default-router ${safeIp(p.router, 'passerelle')}`);
+      const dns = String(p.dns || '').split(/[\s,]+/).filter(Boolean).map((d) => safeIp(d, 'DNS'));
+      if (dns.length) c.push(`dns-server ${dns.join(' ')}`);
+      if (p.domain) c.push(`domain-name ${safe(p.domain, 'domaine')}`);
+      return c;
+    },
+    dhcpPoolDelete: (name) => [`no ip dhcp pool ${safe(name, 'nom')}`],
+    dhcpExcludeAdd: (r) => [`ip dhcp excluded-address ${safeIp(r.from, 'début')}${r.to && r.to !== r.from ? ' ' + safeIp(r.to, 'fin') : ''}`],
+    dhcpExcludeDelete: (r) => [`no ip dhcp excluded-address ${safeIp(r.from, 'début')}${r.to && r.to !== r.from ? ' ' + safeIp(r.to, 'fin') : ''}`],
     vlanCreate: (id, name) => [`vlan ${safeInt(id, 'VLAN', 1, 4094)}`, ...(name ? [`name ${safe(name, 'nom').replace(/\s+/g, '_')}`] : [])],
     vlanDelete: (id) => [`no vlan ${safeInt(id, 'VLAN', 1, 4094)}`],
     routeAdd(r) {

@@ -12,6 +12,7 @@ export function startEmulator({ port = 0, hostname = 'SW1', user = 'admin', pass
     ifaces: ['GigabitEthernet0/1', 'GigabitEthernet0/2', 'GigabitEthernet0/3'].map((name, i) => ({ name, description: '', shutdown: false, mode: 'access', vlan: 1, up: i < 2 })),
     routes: [],
     saved: 0,
+    connections: 0,
     log: [],
   };
   const short = (n) => n.replace('GigabitEthernet', 'Gi');
@@ -47,7 +48,7 @@ export function startEmulator({ port = 0, hostname = 'SW1', user = 'admin', pass
       else if ((m = /^ip route (.+)/.exec(c))) state.routes.push(m[1]);
       else if ((m = /^no ip route (.+)/.exec(c))) state.routes = state.routes.filter((r) => !r.startsWith(m[1]));
       else if (mode.iface && (m = /^description (.*)/.exec(c))) mode.iface.description = m[1];
-      else if (mode.iface && c === 'no description') mode.iface.description = '';
+      else if (mode.iface && /^no description/.test(c)) mode.iface.description = '';
       else if (mode.iface && c === 'shutdown') mode.iface.shutdown = true;
       else if (mode.iface && c === 'no shutdown') mode.iface.shutdown = false;
       else if (mode.iface && (m = /^switchport mode (access|trunk)/.exec(c))) mode.iface.mode = m[1];
@@ -72,6 +73,7 @@ export function startEmulator({ port = 0, hostname = 'SW1', user = 'admin', pass
   const server = new Server({ hostKeys: [privateKey] }, (client) => {
     client.on('authentication', (ctx) => (ctx.method === 'password' && ctx.username === user && ctx.password === pass ? ctx.accept() : ctx.reject(['password'])));
     client.on('ready', () => {
+      state.connections++;
       client.on('session', (accept) => {
         const sess = accept();
         sess.on('pty', (a) => a());

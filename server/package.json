@@ -7,7 +7,7 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "emulator": "node test/emulator-cli.js",
-    "test": "node --test test/e2e.test.js"
+    "test": "node --test --test-timeout=240000 test/e2e.test.js"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

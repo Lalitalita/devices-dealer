@@ -134,3 +134,52 @@ test('prompts : doublons, séquences d’échappement, saut de page HP', async (
   assert.doesNotMatch(last('% Invalid input detected'), cisco.prompt);
   assert.ok(CliSession);
 });
+
+test('session persistante : une seule connexion pour plusieurs actions', async () => {
+  const d = (await api('POST', '/api/devices', { name: 'sw-p', type: 'switch', vendor: 'cisco_ios', host: '127.0.0.1', port: emu.port, username: 'admin', password: 'admin' })).body;
+  const before = emu.state.connections;
+  assert.equal((await api('POST', `/api/devices/${d.id}/connect`)).status, 200);
+  await api('GET', `/api/devices/${d.id}/system`);
+  await api('GET', `/api/devices/${d.id}/vlans`);
+  await api('PUT', `/api/devices/${d.id}/hostname`, { hostname: 'SW-P' });
+  assert.equal(emu.state.connections - before, 1);
+  assert.equal((await api('GET', '/api/sessions')).body.length, 1);
+  await api('POST', `/api/devices/${d.id}/disconnect`);
+  assert.equal((await api('GET', '/api/sessions')).body.length, 0);
+  await api('GET', `/api/devices/${d.id}/system`); // sans session : connexion éphémère
+  assert.equal(emu.state.connections - before, 2);
+  await api('DELETE', `/api/devices/${d.id}`);
+});
+
+test('sauvegardes : notes, comparaison, réinjection', async () => {
+  const d = (await api('POST', '/api/devices', { name: 'sw-b', type: 'switch', vendor: 'cisco_ios', host: '127.0.0.1', port: emu.port, username: 'admin', password: 'admin' })).body;
+  const b1 = (await api('POST', `/api/devices/${d.id}/backups`, { note: 'avant changement' })).body;
+  assert.equal((await api('GET', `/api/devices/${d.id}/backups`)).body[0].note, 'avant changement');
+  await api('PUT', `/api/devices/${d.id}/backups/${b1.name}/note`, { note: 'ok' });
+  assert.equal((await api('GET', `/api/devices/${d.id}/backups`)).body[0].note, 'ok');
+
+  await api('PUT', `/api/devices/${d.id}/interfaces`, { name: 'GigabitEthernet0/1', description: 'MODIFIE' });
+  const diff = (await api('GET', `/api/devices/${d.id}/backups-diff?a=${b1.name}&b=live`)).body;
+  assert.ok(diff.changes.some((c) => c.t === '+' && c.s.includes('MODIFIE')));
+  assert.ok(diff.added >= 1);
+
+  const prev = (await api('POST', `/api/devices/${d.id}/backups/${b1.name}/restore`, { mode: 'preview', removeExtra: true })).body;
+  assert.equal(prev.applied, false);
+  assert.ok(prev.commands.some((c) => c.includes('MODIFIE')));
+  const done = (await api('POST', `/api/devices/${d.id}/backups/${b1.name}/restore`, { mode: 'apply', removeExtra: true })).body;
+  assert.equal(done.applied, true);
+  assert.equal(emu.state.ifaces[0].description, '');
+  assert.ok((await api('GET', `/api/devices/${d.id}/backups`)).body.some((b) => b.note.startsWith('Automatique')));
+  await api('DELETE', `/api/devices/${d.id}`);
+});
+
+test('parseurs Cisco routeur : VLANs sous-interfaces, NAT, DHCP', async () => {
+  const c = await import('../src/drivers/cisco_ios.js');
+  const cfg = 'interface FastEthernet0/1.10\n description Invites\n encapsulation dot1Q 10\n ip address 192.168.10.1 255.255.255.0\n ip nat inside\ninterface FastEthernet0/0\n ip address dhcp\n ip nat outside\nip nat inside source list 30 interface FastEthernet0/0 overload\nip dhcp pool P\n network 192.168.10.0 255.255.255.0\n';
+  const ifs = c.parseInterfaces(cfg, '');
+  assert.deepEqual(c.vlansFromSubinterfaces(ifs).map((v) => [v.id, v.name]), [[10, 'Invites']]);
+  const nat = c.parseNat(cfg, ifs);
+  assert.equal(nat.rules[0].overload, true);
+  assert.deepEqual(nat.interfaces.map((i) => i.role), ['inside', 'outside'].reverse().reverse());
+  assert.equal(c.parseDhcp(cfg).pools[0].network, '192.168.10.0');
+});

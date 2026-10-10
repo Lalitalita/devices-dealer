@@ -5,9 +5,11 @@ Administration visuelle de routeurs et switchs (Cisco, HP/HPE, et autres marques
 - **Appareils** : ajout / modification / suppression, mots de passe chiffrés (AES-256-GCM)
 - **Machines vides** : postes utilisateurs, imprimantes… sans connexion, juste pour le schéma
 - **Topologie automatique** : découverte LLDP/CDP → appareils + liens créés tout seuls, mise en page auto (dagre), glisser-déposer, liens manuels (tirer d'un nœud à l'autre)
-- **Volet de gauche façon OPNsense** : Système, Interfaces, VLANs, Routage, Voisins, Sauvegardes, Commandes, Console
+- **Connexion persistante** : on choisit l'appareil, on clique *Connecter*, la connexion reste ouverte (changement d'onglet sans reconnexion, lectures mises en cache) jusqu'à *Déconnecter* ou 30 min d'inactivité (`SESSION_IDLE_MIN`)
+- **Volet de gauche façon OPNsense** : Système, Interfaces (VLAN par port, sous-interfaces), VLANs, Routage, **NAT** (assistant PAT, redirections), **DHCP**, Voisins, Sauvegardes, Commandes, Console
 - **Console web** (xterm.js) via SSH, console réseau (ser2net/serveur console, TCP/telnet) ou port série local (`/dev/ttyUSB0`)
-- **Journal** de toutes les commandes envoyées ; **sauvegardes** de la running-config
+- **Sauvegardes** de la running-config avec notes, **comparaison** (entre sauvegardes ou avec l'état actuel) et **réinjection** (aperçu des commandes, sauvegarde de sécurité automatique)
+- **Journal** de toutes les commandes envoyées
 - Thème sombre/clair, nom et couleur d'accent personnalisables
 
 ## Démarrage
@@ -27,6 +29,7 @@ Essayer sans matériel : `docker compose --profile demo up -d --build`, puis ajo
 | `ADMIN_USER` / `ADMIN_PASSWORD` | Identifiants de l'interface (défaut `admin` / aléatoire) |
 | `SECRET_KEY` | Clé de chiffrement des secrets ; sinon générée dans `./data/secret.key` |
 | `COOKIE_SECURE` | `true` derrière un reverse proxy HTTPS |
+| `SESSION_IDLE_MIN` | Minutes d'inactivité avant fermeture d'une connexion (30) |
 | `PORT`, `DATA_DIR` | Port (8080) et dossier de données (`/data`) |
 
 Toutes les données (inventaire, liens, sauvegardes, journal, clé) sont dans `./data`.
@@ -37,7 +40,7 @@ Toutes les données (inventaire, liens, sauvegardes, journal, clé) sont dans `.
 
 | Marque | Lecture / écriture (interfaces, VLANs, routes, hostname, voisins) | Terminal, commandes libres, sauvegarde |
 |---|---|---|
-| Cisco IOS / IOS-XE | ✅ testé de bout en bout sur un switch simulé | ✅ |
+| Cisco IOS / IOS-XE (switch, routeur) | ✅ testé sur un switch simulé ; NAT / DHCP / sous-interfaces : parseurs testés | ✅ |
 | HP ProCurve / Aruba OS-Switch | ⚠️ écrit d'après la doc, **non testé sur matériel** | ✅ |
 | HPE Comware / H3C | ⚠️ idem | ✅ |
 | Autres marques | — | ✅ (Console + Commandes) |

@@ -59,3 +59,12 @@ export function maskToPrefix(mask) {
 export function redact(line) {
   return /(password|secret|community|key|passphrase)/i.test(line) ? line.replace(/(\S+)\s*$/, '***') : line;
 }
+
+const toInt = (ip) => ip.split('.').reduce((n, o) => ((n << 8) | Number(o)) >>> 0, 0);
+const toIp = (n) => [24, 16, 8, 0].map((s) => (n >>> s) & 255).join('.');
+
+/** 192.168.10.1 + 255.255.255.0 → { net: 192.168.10.0, wildcard: 0.0.0.255 } */
+export function networkOf(ip, mask) {
+  const m = toInt(mask);
+  return { net: toIp(toInt(ip) & m), wildcard: toIp(~m >>> 0) };
+}
